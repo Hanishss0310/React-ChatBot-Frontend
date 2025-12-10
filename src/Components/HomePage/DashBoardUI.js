@@ -3,11 +3,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { 
   Plus, MessageSquare, Clock, BookOpen, LayoutGrid, Settings,
   Heart, Bookmark, Mic, Sparkles, Menu, X, Video, Music, Bot,
-  Moon, Sun, Search, Image as ImageIcon, FileText, Code, Zap,
-  MoreHorizontal, Trash2, Share2, ChevronRight, Loader2
+  Moon, Sun, Image as ImageIcon, FileText, Code, Zap,
+  Trash2, Loader2
 } from 'lucide-react';
 
-// NEW: import local video prompt/generator tool (expects VideoPromptGenerator.jsx in same folder)
+// routing
+import { useNavigate } from 'react-router-dom';
+
+// import local video prompt/generator tool (expects VideoPromptGenerator.jsx in same folder)
 import VideoPromptGenerator from './VideoPromptGenerator';
 
 const DashBoardUI = () => {
@@ -15,6 +18,11 @@ const DashBoardUI = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [activePanel, setActivePanel] = useState(null);
   const [showTools, setShowTools] = useState(false);
+
+  const navigate = useNavigate();
+
+  // AUTH STATE (read from localStorage)
+  const [user, setUser] = useState(null);
 
   // CHAT STATES
   const [messages, setMessages] = useState([
@@ -30,8 +38,11 @@ const DashBoardUI = () => {
   const [videoUrl, setVideoUrl] = useState(null);
   const [videoMessage, setVideoMessage] = useState(null);
 
-  // NEW: toggle for the local Video Prompt Generator tool UI
+  // toggle for the local Video Prompt Generator tool UI
   const [showVideoTool, setShowVideoTool] = useState(false);
+
+  // CHAT HISTORY (dynamic based on user prompts)
+  const [historyItems, setHistoryItems] = useState([]);
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -45,11 +56,43 @@ const DashBoardUI = () => {
 
   const closePanel = () => setActivePanel(null);
 
+  // Load auth user + chat history from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const storedUser = localStorage.getItem('authUser');
+      if (storedUser) {
+        try {
+          setUser(JSON.parse(storedUser));
+        } catch {
+          setUser(null);
+        }
+      }
+
+      const storedHistory = localStorage.getItem('chat_history');
+      if (storedHistory) {
+        try {
+          setHistoryItems(JSON.parse(storedHistory));
+        } catch {
+          setHistoryItems([]);
+        }
+      }
+    }
+  }, []);
+
+  const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('authUser');
+    }
+    setUser(null);
+    navigate('/');
+  };
+
   // Panel content
   const renderPanelContent = () => {
     switch (activePanel) {
       case 'history':
-        return <HistoryPanel onClose={closePanel} />;
+        return <HistoryPanel onClose={closePanel} items={historyItems} />;
       case 'library':
         return <LibraryPanel onClose={closePanel} />;
       case 'apps':
@@ -70,22 +113,15 @@ const DashBoardUI = () => {
     }
   }, [messages, loading, videoUrl]);
 
-  // Helper: render message text as paragraph blocks (matches image)
-  // - Splits into paragraphs by blank lines
-  // - Renders bullet-like and ordered lines inline but as indented paragraph-like lines
-  // - Preserves single-line and multi-line paragraphs and internal line breaks
+  // Helper: render message text as paragraph blocks
   const renderMessageText = (raw) => {
     if (!raw && raw !== 0) return null;
     const text = String(raw);
 
-    // Normalize line endings and split into paragraphs by blank line(s)
     const paragraphs = text.replace(/\r/g, '').split(/\n{2,}/g);
 
     return paragraphs.map((para, pIdx) => {
-      // Split paragraph into lines (preserve order)
       const lines = para.split(/\n/).map(l => l.trim());
-
-      // Determine if paragraph is all unordered bullets or all ordered
       const isAllUnordered = lines.length > 0 && lines.every(l => (/^[\*\-\u2022]\s+/.test(l)));
       const isAllOrdered = lines.length > 0 && lines.every(l => (/^\d+\.\s+/.test(l)));
 
@@ -122,7 +158,6 @@ const DashBoardUI = () => {
         );
       }
 
-      // Mixed or normal paragraph: keep internal newlines as <br>, render as single paragraph block
       const parts = para.split(/\n/);
       return (
         <p key={pIdx} className="mb-4 leading-relaxed text-sm">
@@ -137,11 +172,7 @@ const DashBoardUI = () => {
     });
   };
 
-  // ----------------------
   // Local-storage video lookup
-  // ----------------------
-  // Looks for a stored video whose name (without extension) is mentioned in the prompt.
-  // localStorage key used by VideoPromptGenerator: "vp_videos"
   const findLocalVideoForPrompt = (prompt) => {
     if (!prompt || !window?.localStorage) return null;
     try {
@@ -152,18 +183,13 @@ const DashBoardUI = () => {
 
       const normalizedPrompt = prompt.toLowerCase();
 
-      // Try to find the best match:
-      // 1) exact name contained in prompt (without extension)
-      // 2) fallback: any video whose name words are included in prompt
       for (const v of list) {
         if (!v.name) continue;
         const nameNoExt = v.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
         if (!nameNoExt) continue;
-        // If user typed exactly "Anatomy Skeleton" or included it: match
         if (normalizedPrompt.includes(nameNoExt)) return v;
       }
 
-      // Fallback: try token-match (all words of name appear somewhere)
       for (const v of list) {
         if (!v.name) continue;
         const nameNoExt = v.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
@@ -180,31 +206,43 @@ const DashBoardUI = () => {
     }
   };
 
+  // helper: push to history when user sends a prompt
+  const addToHistory = (text) => {
+    const title = text.length > 40 ? text.slice(0, 37) + '...' : text || 'New chat';
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    setHistoryItems(prev => {
+      const updated = [{ id: Date.now(), title, time }, ...prev].slice(0, 30); // keep last 30
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('chat_history', JSON.stringify(updated));
+      }
+      return updated;
+    });
+  };
+
   // SEND CHAT MESSAGE
   const sendMessage = async () => {
     const text = input.trim();
     if (!text) return;
 
-    // First, check local storage for a matching video (user asked "Anatomy Skeleton" or similar)
+    // add to history based on user search/prompt
+    addToHistory(text);
+
     const matched = findLocalVideoForPrompt(text);
     if (matched) {
-      // Append user's message
       setMessages(prev => [...prev, { role: 'user', text }]);
-      // Append assistant message containing the video
       const assistantMsg = {
         role: 'assistant',
         text: `Showing "${matched.name.replace(/\.[^/.]+$/, '')}" video.`,
         videoUrl: matched.dataURL
       };
       setMessages(prev => [...prev, assistantMsg]);
-      // Also set the Generated Video preview area
       setVideoUrl(matched.dataURL);
       setVideoMessage(`Loaded from local storage: ${matched.name}`);
       setInput('');
-      return; // skip server call
+      return;
     }
 
-    // If no local video matched, proceed with normal chat flow
     const userMsg = { role: 'user', text };
 
     let newMessages;
@@ -218,7 +256,6 @@ const DashBoardUI = () => {
 
     setTimeout(async () => {
       try {
-        // Pointing to the robust server
         const res = await fetch("http://localhost:4000/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -246,7 +283,6 @@ const DashBoardUI = () => {
     }, 600);
   };
 
-  // ENTER to send
   const onKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -254,10 +290,8 @@ const DashBoardUI = () => {
     }
   };
 
-  // ---------- VIDEO GENERATION (server flow) ----------
+  // VIDEO GENERATION (server flow)
   const generateVideo = async ({ prompt = '' } = {}) => {
-    // Note: Video generation requires a different server setup or API key
-    // The currently provided robust server is Gemini-Only (Chat).
     const text = (prompt || videoPrompt || '').trim();
     if (!text) return;
     setVideoGenerating(true);
@@ -265,10 +299,9 @@ const DashBoardUI = () => {
     setVideoUrl(null);
     setShowVideoModal(false);
     
-    // Simulate delay for UI demo purposes since server is chat-only
     setTimeout(() => {
-       setVideoGenerating(false);
-       setVideoMessage("Server is currently configured for Chat (Gemini) only.");
+      setVideoGenerating(false);
+      setVideoMessage("Server is currently configured for Chat (Gemini) only.");
     }, 2000);
   };
 
@@ -283,6 +316,9 @@ const DashBoardUI = () => {
     setVideoPrompt('');
     setShowVideoModal(true);
   };
+
+  const displayName = user?.name || "Jidan";
+  const avatarSeed = user?.name || "Jidan";
 
   // ---------- RENDER ----------
   return (
@@ -305,7 +341,6 @@ const DashBoardUI = () => {
           .animate-spin-3d {
             animation: spin-3d 12s linear infinite;
           }
-          /* Hide scrollbar */
           aside::-webkit-scrollbar, nav::-webkit-scrollbar, .scrollbar-hide::-webkit-scrollbar { display: none; }
           aside, nav, .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         `}</style>
@@ -328,7 +363,10 @@ const DashBoardUI = () => {
         >
           <div 
             className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-600 mb-8 shadow-lg shadow-blue-500/20 shrink-0 cursor-pointer"
-            onClick={() => setActivePanel(null)}
+            onClick={() => {
+              setActivePanel(null);
+              navigate("/dashboard");
+            }}
           ></div>
 
           <nav className="flex-1 flex flex-col gap-6 w-full items-center overflow-y-auto scrollbar-hide">
@@ -353,7 +391,7 @@ const DashBoardUI = () => {
               <Settings size={20} />
             </button>
             <img 
-              src="https://api.dicebear.com/7.x/avataaars/svg?seed=Jidan" 
+              src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(avatarSeed)}`} 
               alt="User" 
               className="w-8 h-8 rounded-full border border-gray-200 dark:border-slate-700"
             />
@@ -387,12 +425,26 @@ const DashBoardUI = () => {
               </button>
               
               <div className="flex items-center gap-2 text-sm">
-                <div className={`flex items-center gap-2 ${activePanel ? 'hidden md:flex' : 'flex'}`}>
+                <div
+                  className={`flex items-center gap-2 ${activePanel ? 'hidden md:flex' : 'flex'} cursor-pointer`}
+                  onClick={() => navigate("/dashboard")}
+                >
                   <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-200 dark:bg-slate-800 hidden sm:block">
-                     <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Jidan" alt="Profile" />
+                     <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(avatarSeed)}`} alt="Profile" />
                   </div>
-                  <span className="font-semibold text-gray-900 dark:text-white hidden sm:inline">Jidan</span>
-                  <span className="text-gray-500 dark:text-gray-400 hidden sm:inline">for Zain's Studio</span>
+                  <span className="font-semibold text-gray-900 dark:text-white hidden sm:inline">
+                    {displayName}
+                  </span>
+                  {user?.email && (
+                    <span className="text-gray-500 dark:text-gray-400 hidden sm:inline">
+                      {user.email}
+                    </span>
+                  )}
+                  {!user?.email && (
+                    <span className="text-gray-500 dark:text-gray-400 hidden sm:inline">
+                      for Zain&apos;s Studio
+                    </span>
+                  )}
                   <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
                     Available for work
                   </span>
@@ -414,9 +466,31 @@ const DashBoardUI = () => {
               >
                 <Bookmark size={18} />
               </button>
-              <button className="bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-gray-100 dark:text-slate-900 text-white px-4 md:px-6 py-2 rounded-full text-sm font-medium transition-colors">
-                Get in touch
-              </button>
+
+              {/* Login / Signup / Logout */}
+              {user ? (
+                <button
+                  onClick={handleLogout}
+                  className="bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-gray-100 dark:text-slate-900 text-white px-4 md:px-6 py-2 rounded-full text-sm font-medium transition-colors"
+                >
+                  Logout
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => navigate("/login")}
+                    className="hidden sm:inline-flex px-4 py-2 rounded-full border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-slate-100 bg-white/70 dark:bg-slate-900/70 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    Login
+                  </button>
+                  <button
+                    onClick={() => navigate("/signup")}
+                    className="bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-gray-100 dark:text-slate-900 text-white px-4 md:px-6 py-2 rounded-full text-sm font-medium transition-colors"
+                  >
+                    Sign up
+                  </button>
+                </>
+              )}
             </div>
           </header>
 
@@ -492,13 +566,11 @@ const DashBoardUI = () => {
 
           {/* ====================================================================================
               APPLE LIQUID GLASS HOVER EFFECT (Glassmorphism)
-              - Expands on Hover/Focus
-              - Uses Backdrop Blur, Saturation, and Cubic Bezier smoothing
              ==================================================================================== */}
           <div className="absolute bottom-6 left-0 right-0 flex justify-center pointer-events-none z-30">
             <div className="pointer-events-auto group relative flex items-end justify-center">
               
-              {/* 1. Floating Button (Visible by default, vanishes on Hover) */}
+              {/* Floating Button */}
               <button
                 aria-label="Open chat"
                 className="
@@ -518,7 +590,7 @@ const DashBoardUI = () => {
                 <Sparkles size={24} />
               </button>
 
-              {/* 2. Glass Panel (Hidden by default, expands on Hover) */}
+              {/* Glass Panel */}
               <div
                 className={`
                   absolute bottom-0 w-[90vw] max-w-3xl
@@ -526,10 +598,8 @@ const DashBoardUI = () => {
                   transition-all duration-500 ease-[cubic-bezier(0.19,1,0.22,1)]
                   transform-gpu
                   
-                  /* Default State (Collapsed) */
                   opacity-0 scale-90 translate-y-8 pointer-events-none
                   
-                  /* Active State (Hover or Focus-Within) */
                   group-hover:opacity-100 group-hover:scale-100 group-hover:translate-y-0 group-hover:pointer-events-auto
                   focus-within:opacity-100 focus-within:scale-100 focus-within:translate-y-0 focus-within:pointer-events-auto
                   z-30
@@ -595,7 +665,7 @@ const DashBoardUI = () => {
                   </div>
                 </div>
 
-                {/* Tools Popup (Inside Glass Logic) */}
+                {/* Tools Popup */}
                 {showTools && (
                   <div className="
                     absolute bottom-full left-4 mb-2 
@@ -611,12 +681,15 @@ const DashBoardUI = () => {
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1"></div>
 
                     {/* Existing server-based video modal trigger */}
-                    <button onClick={() => { setShowTools(false); openVideoModal(); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors">
+                    <button
+                      onClick={() => { setShowTools(false); openVideoModal(); }}
+                      className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors"
+                    >
                       <span className="text-purple-500 dark:text-purple-400"><Video size={18} /></span>
                       <span>Generate Video (Server)</span>
                     </button>
 
-                    {/* NEW: Local Video Prompt Generator tool */}
+                    {/* Local Video Prompt Generator tool */}
                     <button
                       onClick={() => { setShowTools(false); setShowVideoTool(true); }}
                       className="w-full mt-2 flex items-center gap-3 px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors"
@@ -663,7 +736,7 @@ const DashBoardUI = () => {
             </div>
           )}
 
-          {/* NEW: Local Video Prompt Generator Modal (renders your VideoPromptGenerator component) */}
+          {/* Local Video Prompt Generator Modal */}
           {showVideoTool && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowVideoTool(false)} />
@@ -674,10 +747,7 @@ const DashBoardUI = () => {
                     <X size={18} />
                   </button>
                 </div>
-
-                {/* Render the VideoPromptGenerator (handles local storage, upload, prompts, generation animation, display) */}
                 <VideoPromptGenerator />
-
               </div>
             </div>
           )}
@@ -687,9 +757,9 @@ const DashBoardUI = () => {
   );
 };
 
-/* --- SUB COMPONENTS (unchanged) --- */
+/* --- SUB COMPONENTS --- */
 
-const HistoryPanel = ({ onClose }) => (
+const HistoryPanel = ({ onClose, items = [] }) => (
   <div className="p-4 flex flex-col h-full animate-in slide-in-from-left-4 duration-300">
     <div className="flex items-center justify-between mb-6">
       <h2 className="text-xl font-bold text-slate-900 dark:text-white">History</h2>
@@ -697,22 +767,21 @@ const HistoryPanel = ({ onClose }) => (
         <X size={18} />
       </button>
     </div>
-    <div className="flex flex-col gap-6 overflow-y-auto">
-      <div>
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Today</h3>
-        <div className="flex flex-col gap-1">
-          <HistoryItem title="React Component" time="10:23 AM" compact />
-          <HistoryItem title="Logo Design Ideas" time="9:45 AM" compact />
-        </div>
-      </div>
-      <div>
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Yesterday</h3>
-        <div className="flex flex-col gap-1">
-          <HistoryItem title="Email Draft" time="Yesterday" compact />
-          <HistoryItem title="Python Script" time="Yesterday" compact />
-          <HistoryItem title="Marketing Copy" time="Yesterday" compact />
-        </div>
-      </div>
+
+    <div className="flex-1 flex flex-col gap-3 overflow-y-auto">
+      {(!items || items.length === 0) && (
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          No recent prompts yet. Start a conversation and your searches will appear here.
+        </p>
+      )}
+      {items && items.map((it) => (
+        <HistoryItem
+          key={it.id}
+          title={it.title}
+          time={it.time}
+          compact
+        />
+      ))}
     </div>
   </div>
 );
@@ -775,8 +844,6 @@ const HomeView = () => (
     </div>
   </div>
 );
-
-/* --- simple helper components left unchanged --- */
 
 const SidebarIcon = ({ icon, label, active = false, onClick }) => (
   <button 
